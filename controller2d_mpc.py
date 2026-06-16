@@ -144,8 +144,8 @@ class Controller2D(object):
         return throttle, brake
 
     def mpc_lateral(self, x, y, yaw, v, waypoints):
-        # Simple receding-horizon search over constant steering commands.
-        N = 8
+        # Receding-horizon steering using a constant-control candidate search.
+        N = 10
         dt = 0.1
         L = self._wheelbase
         total_wp = len(waypoints)
@@ -167,37 +167,53 @@ class Controller2D(object):
             closest_idx = max(total_wp - 2, 0)
         self.vars.closest_idx_prev = closest_idx
 
+        lookahead_dist = max(10.0, 1.5 * v)
+        lookahead_idx = closest_idx
+        while lookahead_idx < total_wp - 1:
+            dx = waypoints[lookahead_idx][0] - x
+            dy = waypoints[lookahead_idx][1] - y
+            if math.hypot(dx, dy) >= lookahead_dist:
+                break
+            lookahead_idx += 1
+
+        if lookahead_idx >= total_wp:
+            lookahead_idx = total_wp - 1
+
         x1, y1 = waypoints[closest_idx][0], waypoints[closest_idx][1]
-        x2, y2 = waypoints[closest_idx + 1][0], waypoints[closest_idx + 1][1]
+        x2, y2 = waypoints[lookahead_idx][0], waypoints[lookahead_idx][1]
+        if closest_idx == lookahead_idx:
+            x2, y2 = waypoints[min(closest_idx + 1, total_wp - 1)][0], waypoints[min(closest_idx + 1, total_wp - 1)][1]
+
         path_yaw = math.atan2(y2 - y1, x2 - x1)
-
-        cte = self.cross_track_error(x, y, x1, y1, x2, y2)
-        e_psi = self.angle_normalize(path_yaw - yaw)
-
         if v < 0.1:
             delta = 0.0
             self.vars.delta_prev = delta
             return delta
 
-        A = np.array([[1.0, v * dt], [0.0, 1.0]])
-        B = np.array([[0.0], [v * dt / L]])
-        Q = np.diag([3.0, 1.5])
-        R = 0.5
+        q_cte = 4.0
+        q_psi = 2.0
+        r = 0.8
 
-        x_state = np.array([cte, e_psi])
         best_cost = float('inf')
         best_delta = self.vars.delta_prev
-        for delta_candidate in np.linspace(-0.5, 0.5, 21):
-            x_pred = x_state.copy()
+        for delta_candidate in np.linspace(-0.45, 0.45, 31):
+            x_pred, y_pred, yaw_pred = x, y, yaw
             cost = 0.0
             for _ in range(N):
-                x_pred = A.dot(x_pred) + B.flatten() * delta_candidate
-                cost += x_pred.T.dot(Q).dot(x_pred) + R * (delta_candidate ** 2)
+                x_pred += v * math.cos(yaw_pred) * dt
+                y_pred += v * math.sin(yaw_pred) * dt
+                yaw_pred += v / L * delta_candidate * dt
+                yaw_pred = self.angle_normalize(yaw_pred)
+
+                cte_pred = self.cross_track_error(x_pred, y_pred, x1, y1, x2, y2)
+                e_psi_pred = self.angle_normalize(path_yaw - yaw_pred)
+                cost += q_cte * (cte_pred ** 2) + q_psi * (e_psi_pred ** 2) + r * (delta_candidate ** 2)
+
             if cost < best_cost:
                 best_cost = cost
                 best_delta = delta_candidate
 
-        delta = 0.85 * self.vars.delta_prev + 0.15 * best_delta
+        delta = 0.82 * self.vars.delta_prev + 0.18 * best_delta
         delta = np.clip(delta, -0.55, 0.55)
         self.vars.delta_prev = delta
         return delta
