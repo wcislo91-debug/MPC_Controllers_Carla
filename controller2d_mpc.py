@@ -124,15 +124,15 @@ class Controller2D(object):
 
     def mpc_longitudinal(self, v, v_desired, dt):
         # MPC-like velocity horizon with smoothing and deadband.
-        N = 8
+        N = 20
         a_min, a_max = -3.0, 1.0
-        horizon_scale = N * dt + 0.5
+        horizon_scale = max(N * dt + 1.0, 1.5)
 
-        a_cmd = np.clip((v_desired - v) / max(horizon_scale, 1e-3), a_min, a_max)
-        a_cmd = 0.8 * self.vars.a_prev + 0.2 * a_cmd
+        a_cmd = np.clip((v_desired - v) / horizon_scale, a_min, a_max)
+        a_cmd = 0.78 * self.vars.a_prev + 0.22 * a_cmd
         self.vars.a_prev = a_cmd
 
-        if abs(a_cmd) < 0.08:
+        if abs(a_cmd) < 0.12:
             throttle = 0.0
             brake = 0.0
         elif a_cmd > 0.0:
@@ -140,7 +140,7 @@ class Controller2D(object):
             brake = 0.0
         else:
             throttle = 0.0
-            brake = np.clip(-a_cmd / 3.0, 0.0, 1.0)
+            brake = np.clip(-a_cmd / 3.5, 0.0, 1.0)
         return throttle, brake
 
     def mpc_lateral(self, x, y, yaw, v, waypoints):
