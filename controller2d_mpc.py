@@ -34,6 +34,8 @@ class Controller2D(object):
         self.vars.create_var('closest_idx_prev', 0)
         self.vars.create_var('delta_prev', 0.0)
         self.vars.create_var('a_prev', 0.0)
+        self.vars.create_var('throttle_prev', 0.0)
+        self.vars.create_var('brake_prev', 0.0)
 
     def update_values(self, x, y, yaw, speed, timestamp, frame):
         self._current_x         = x
@@ -123,24 +125,36 @@ class Controller2D(object):
         return ang
 
     def mpc_longitudinal(self, v, v_desired, dt):
-        # MPC-like velocity horizon with smoothing and deadband.
-        N = 20
+        # MPC-like velocity horizon with a longer lookahead and rate-limited outputs.
+        N = 30
         a_min, a_max = -3.0, 1.0
-        horizon_scale = max(N * dt + 1.0, 1.5)
+        horizon_scale = max(N * dt + 1.0, 2.0)
 
         a_cmd = np.clip((v_desired - v) / horizon_scale, a_min, a_max)
-        a_cmd = 0.78 * self.vars.a_prev + 0.22 * a_cmd
+        a_cmd = 0.75 * self.vars.a_prev + 0.25 * a_cmd
         self.vars.a_prev = a_cmd
 
-        if abs(a_cmd) < 0.12:
+        v_error = v_desired - v
+        if abs(v_error) < 0.12:
             throttle = 0.0
             brake = 0.0
         elif a_cmd > 0.0:
-            throttle = np.clip(a_cmd / 1.0, 0.0, 1.0)
+            throttle = np.clip(a_cmd / 0.9, 0.0, 1.0)
+            if v_error < 0.5:
+                throttle = min(throttle, 0.65)
             brake = 0.0
         else:
             throttle = 0.0
             brake = np.clip(-a_cmd / 3.5, 0.0, 1.0)
+
+        # Softly rate-limit transitions for smoother actuation.
+        throttle = self.vars.throttle_prev + np.clip(throttle - self.vars.throttle_prev, -0.05, 0.05)
+        brake = self.vars.brake_prev + np.clip(brake - self.vars.brake_prev, -0.05, 0.05)
+        throttle = np.clip(throttle, 0.0, 1.0)
+        brake = np.clip(brake, 0.0, 1.0)
+        self.vars.throttle_prev = throttle
+        self.vars.brake_prev = brake
+
         return throttle, brake
 
     def mpc_lateral(self, x, y, yaw, v, waypoints):
